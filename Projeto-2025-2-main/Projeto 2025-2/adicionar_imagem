@@ -1,0 +1,139 @@
+import tkinter as tk
+from tkinter import filedialog
+from pathlib import Path
+import shutil
+import sys
+import numpy as np # Necessário para os parâmetros
+
+# --- 1. IMPORTANDO TODAS AS FERRAMENTAS ---
+
+# Funções do Banco de Dados
+from database_manager import add_image, update_image_analysis_result
+
+# Função "Cérebro" da IA
+from detect_desmatamento import process_image, ensure_dir
+
+# Parâmetros de Ouro (do seu script chefe)
+# (Copiamos eles aqui para o script saber como processar)
+try:
+    from processador_automatico import (
+        LOWER_HSV_FIXO, UPPER_HSV_FIXO,
+        USE_EXG_FIXO, EXG_THRESH_FIXO, COMBINE_MODE_FIXO,
+        MIN_AREA_FIXO, KERNEL_OPEN_FIXO, KERNEL_CLOSE_FIXO,
+        OUTPUT_DIR_FIXO, CONFIANCA_FIXA
+    )
+except ImportError:
+    print("[ERRO FATAL] Não foi possível importar os 'parâmetros de ouro' do 'processador_automatico.py'")
+    print("Verifique se o arquivo existe e se as variáveis fixas estão nele.")
+    sys.exit(1)
+
+
+IMAGE_DIR = Path("images") #
+
+def selecionar_cadastrar_e_processar():
+    # --- 2. Abrir o Explorador de Arquivos (GUI) ---
+    print("Abrindo explorador de arquivos...")
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        original_path_str = filedialog.askopenfilename(
+            parent=root,
+            title="Selecione a imagem para ADICIONAR e PROCESSAR",
+            filetypes=[("Imagens", "*.png *.jpg *.jpeg *.tif *.webp")]
+        )
+        root.destroy()
+    except Exception as e:
+        print(f"Erro ao iniciar o seletor de arquivos (Tkinter): {e}")
+        return
+
+    if not original_path_str:
+        print("Nenhuma imagem selecionada. Operação cancelada.")
+        return
+
+    original_path = Path(original_path_str)
+    filename = original_path.name
+    destination_path = IMAGE_DIR / filename
+    
+    # --- 3. Copiar o Arquivo ---
+    IMAGE_DIR.mkdir(exist_ok=True) 
+
+    if not destination_path.exists():
+        try:
+            shutil.copy(original_path, destination_path)
+            print(f"Arquivo copiado com sucesso para: {destination_path}")
+        except Exception as e:
+            print(f"\n[ERRO] Falha ao copiar o arquivo para '{destination_path}': {e}")
+            return
+    else:
+         print(f"Arquivo '{filename}' já existe em '{IMAGE_DIR}'. Pulando cópia.")
+
+    # --- 4. Salvar no Banco de Dados (com status 'pending') ---
+    print("Usando metadados padrão (dummy) para salvar no banco...")
+    last_image_id = None
+    try:
+        last_image_id = add_image(
+            filename=filename,
+            file_path=str(destination_path),
+            capture_date="2025-01-01",
+            source="Upload via GUI"
+        )
+        
+        if last_image_id is None:
+             # Isso acontece se a imagem já estava no banco (IntegrityError)
+             print("\n[INFO] Esta imagem já estava cadastrada no banco.")
+             print("O processamento não será executado novamente.")
+             return
+        
+        print(f"Imagem ID {last_image_id} adicionada ao banco com status 'pending'.")
+
+    except Exception as e:
+        print(f"\n[ERRO] Falha ao salvar no banco de dados: {e}")
+        return
+
+    # --- 5. PROCESSAMENTO IMEDIATO (A NOVA AUTOMAÇÃO) ---
+    print(f"\nIniciando processamento imediato para a Imagem ID: {last_image_id}...")
+    
+    try:
+        # Chamando a função da IA com os parâmetros fixos
+        resultados_ia = process_image(
+            img_path=destination_path,
+            out_dir=OUTPUT_DIR_FIXO,
+            lower_hsv=LOWER_HSV_FIXO,
+            upper_hsv=UPPER_HSV_FIXO,
+            kernel_open=KERNEL_OPEN_FIXO,
+            kernel_close=KERNEL_CLOSE_FIXO,
+            min_component_area=MIN_AREA_FIXO,
+            use_exg=USE_EXG_FIXO,
+            exg_thresh=EXG_THRESH_FIXO,
+            combine_mode=COMBINE_MODE_FIXO,
+            save_intermediates=False # Economiza espaço
+        )
+        
+        percentual = resultados_ia.get('percentual', 0.0)
+        area_em_pixels = resultados_ia.get('pixels_desmatado', 0)
+        
+        print(f"Análise concluída. Resultado: {percentual:.4f}% de cobertura.")
+        
+        # Salvando os resultados de volta no Banco de Dados
+        update_image_analysis_result(
+            image_id=last_image_id,
+            percentage=percentual,
+            area=area_em_pixels,
+            confidence=CONFIANCA_FIXA
+        )
+        print(f"Resultados da Imagem ID {last_image_id} salvos no banco (status 'success').")
+        
+        print("\n=======================================================")
+        print("AUTOMAÇÃO CONCLUÍDA! (Cadastro + Análise)")
+        print(f"A imagem de resultado foi salva em: {OUTPUT_DIR_FIXO}")
+        print("=======================================================")
+
+    except Exception as e:
+        print(f"[ERRO NA IA] Falha ao processar a Imagem ID {last_image_id}: {e}")
+        print("A imagem está no banco como 'pending', rode o 'processador_automatico.py' para tentar de novo.")
+
+
+# --- Executa a função principal ---
+if __name__ == "__main__":
+    selecionar_cadastrar_e_processar()
