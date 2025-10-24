@@ -1,4 +1,5 @@
 # desmate_vs_code.py
+#ilustrative image recognizer for vegetation detection
 import sys
 import os
 from pathlib import Path
